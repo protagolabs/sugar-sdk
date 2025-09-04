@@ -58,8 +58,6 @@ setuptools.setup(
     zip_safe = False,
     entry_points = {
         'console_scripts': cfg.get('console_scripts','').split(),
-        'nbdev': [f'{cfg.get("lib_path")}={cfg.get("lib_path")}._modidx:d']
+        'nbdev': ['netmind_sugar=netmind_sugar._modidx:d']
     },
     **setup_cfg)
-
-

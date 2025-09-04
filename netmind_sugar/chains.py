@@ -556,7 +556,7 @@ class Chain(CommonChain):
                     continue
 
         return results
-
+    
     @require_context
     def get_bridge_fee(self, domain: int) -> int:
         contract = self.web3.eth.contract(address=self.settings.bridge_contract_addr, abi=bridge_get_fee_abi)
@@ -635,6 +635,12 @@ class Chain(CommonChain):
         return self.prepare_tokens(self.paginate(get_tokens), listed_only)
 
     @require_context
+    @lru_cache(maxsize=None)
+    def get_tokens_page(self, limit, offset, listed_only: bool = False) -> List[Token]:
+        results = self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, []).call()
+        return self.prepare_tokens(results, listed_only)
+
+    @require_context
     def get_token(self, address: str) -> Optional[Token]:
         """Get token by address"""
         return self.find_token_by_address(self.get_all_tokens(), address)
@@ -671,6 +677,10 @@ class Chain(CommonChain):
     def get_raw_pools(self, for_swaps: bool):
         return self.paginate(self.sugar.functions.forSwaps if for_swaps else self.sugar.functions.all)
 
+    @lru_cache(maxsize=None)
+    def get_raw_pools_page(self, limit, offset, for_swaps: bool = False):
+        return self.sugar.functions.forSwaps(limit, offset).call() if for_swaps else self.sugar.functions.all(limit, offset).call()
+    
     @require_context
     def get_pools(self, for_swaps: bool = False) -> List[LiquidityPool]:
         pools = self.get_raw_pools(for_swaps)
@@ -687,6 +697,11 @@ class Chain(CommonChain):
         except: return None
         tokens = self.get_all_tokens(listed_only=False)
         return self.prepare_pools([p], tokens, self.get_prices(tokens))[0]
+
+    @require_context
+    @lru_cache(maxsize=None)
+    def get_raw_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
+        return self.sugar.functions.byAddress(address).call()
     
     @require_context
     def get_pools_for_swaps(self) -> List[LiquidityPoolForSwap]: return self.get_pools(for_swaps=True)
@@ -701,10 +716,21 @@ class Chain(CommonChain):
 
     @require_context
     @lru_cache(maxsize=None)
+    def get_raw_pool_epochs(self, lp: str, offset: int = 0, limit: int = 10):
+        return self.sugar_rewards.functions.epochsByAddress(limit, offset, normalize_address(lp)).call()
+
+
+    @require_context
+    @lru_cache(maxsize=None)
     def get_latest_pool_epochs(self) -> List[LiquidityPoolEpoch]:
         tokens, pools = self.get_all_tokens(listed_only=False), self.get_pools()
         prices = self.get_prices(tokens)
         return self.prepare_pool_epochs(self.paginate(self.sugar_rewards.functions.epochsLatest), pools, tokens, prices)
+
+    @require_context
+    @lru_cache(maxsize=None)
+    def get_raw_latest_pool_epochs_page(self, limit, offset):
+        return self.sugar_rewards.functions.epochsLatest(limit, offset).call()
 
     @require_context
     def _get_quotes_for_paths(self, from_token: Token, to_token: Token, amount_in: int, pools: List[LiquidityPoolForSwap], paths: List[List[Tuple]]) -> List[Optional[Quote]]:
