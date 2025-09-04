@@ -636,9 +636,8 @@ class Chain(CommonChain):
 
     @require_context
     @lru_cache(maxsize=None)
-    def get_tokens_page(self, limit, offset, listed_only: bool = False) -> List[Token]:
-        results = self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, []).call()
-        return self.prepare_tokens(results, listed_only)
+    def get_tokens_page(self, limit, offset) -> List[Token]:
+        return self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, []).call()
 
     @require_context
     def get_token(self, address: str) -> Optional[Token]:
