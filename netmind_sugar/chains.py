@@ -679,8 +679,8 @@ class Chain(CommonChain):
     @lru_cache(maxsize=None)
     def get_pools_page(self, limit, offset, for_swaps: bool = False):
         pools = self.sugar.functions.forSwaps(limit, offset).call() if for_swaps else self.sugar.functions.all(limit, offset).call()
-        address_list = [p[7] for p in pools] + [p[10] for p in pools]
         if not for_swaps:
+            address_list = [p[7] for p in pools] + [p[10] for p in pools]
             tokens = self.prepare_tokens(self.sugar.functions.tokens(len(address_list), 0, ADDRESS_ZERO, address_list).call(), listed_only=False)
             if self.settings.stable_token_addr.lower() not in [t.token_address.lower() for t in tokens]:
                 tokens.append(self.get_token(self.settings.stable_token_addr))
