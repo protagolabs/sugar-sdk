@@ -677,8 +677,15 @@ class Chain(CommonChain):
         return self.paginate(self.sugar.functions.forSwaps if for_swaps else self.sugar.functions.all)
 
     @lru_cache(maxsize=None)
-    def get_raw_pools_page(self, limit, offset, for_swaps: bool = False):
-        return self.sugar.functions.forSwaps(limit, offset).call() if for_swaps else self.sugar.functions.all(limit, offset).call()
+    def get_pools_page(self, limit, offset, for_swaps: bool = False):
+        pools = self.sugar.functions.forSwaps(limit, offset).call() if for_swaps else self.sugar.functions.all(limit, offset).call()
+        address_list = [p[7] for p in pools] + [p[10] for p in pools]
+        if not for_swaps:
+            tokens = self.prepare_tokens(self.sugar.functions.tokens(len(address_list), 0, ADDRESS_ZERO, address_list).call(), listed_only=False)
+            if self.settings.stable_token_addr.lower() not in [t.token_address.lower() for t in tokens]:
+                tokens.append(self.get_token(self.settings.stable_token_addr))
+            return self.prepare_pools(pools, tokens, self.get_prices(tokens))
+        else: return self.prepare_pools_for_swap(pools)
     
     @require_context
     def get_pools(self, for_swaps: bool = False) -> List[LiquidityPool]:
@@ -692,15 +699,22 @@ class Chain(CommonChain):
     @lru_cache(maxsize=None)
     def get_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
         try:
-            p = self.sugar.functions.byAddress(address).call()
+            pools = self.sugar.functions.byAddress(address).call()
         except: return None
-        tokens = self.get_all_tokens(listed_only=False)
-        return self.prepare_pools([p], tokens, self.get_prices(tokens))[0]
+        address_list = [pools[7], pools[10]]
+        tokens = self.prepare_tokens(self.sugar.functions.tokens(len(address_list), 0, ADDRESS_ZERO, address_list).call(), listed_only=False)
+        if self.settings.stable_token_addr.lower() not in [t.token_address.lower() for t in tokens]:
+            tokens.append(self.get_token(self.settings.stable_token_addr))
+        return self.prepare_pools([pools], tokens, self.get_prices(tokens))[0]
 
-    @require_context
-    @lru_cache(maxsize=None)
-    def get_raw_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
-        return self.sugar.functions.byAddress(address).call()
+    # @require_context
+    # @lru_cache(maxsize=None)
+    # def get_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
+    #     try:
+    #         p = self.sugar.functions.byAddress(address).call()
+    #     except: return None
+    #     tokens = self.get_all_tokens(listed_only=False)
+    #     return self.prepare_pools([p], tokens, self.get_prices(tokens))[0]
     
     @require_context
     def get_pools_for_swaps(self) -> List[LiquidityPoolForSwap]: return self.get_pools(for_swaps=True)
@@ -715,8 +729,25 @@ class Chain(CommonChain):
 
     @require_context
     @lru_cache(maxsize=None)
-    def get_raw_pool_epochs(self, lp: str, offset: int = 0, limit: int = 10):
-        return self.sugar_rewards.functions.epochsByAddress(limit, offset, normalize_address(lp)).call()
+    def get_pool_epochs_page(self, lp: str, offset: int = 0, limit: int = 10):
+        epochs_latest = self.sugar_rewards.functions.epochsByAddress(limit, offset, normalize_address(lp)).call()
+        pools = []
+        address_list = []
+        for t in epochs_latest:
+            ts, lp, votes, emissions, incentives, fees = t[0], normalize_address(t[1]), t[2], t[3], t[4], t[5]
+            pools.append(self.get_pool_by_address(lp))
+
+            for i in incentives:
+                address_list.append(i[0])
+
+            for i in fees:
+                address_list.append(i[0])
+
+        tokens = self.prepare_tokens(self.sugar.functions.tokens(len(address_list), 0, ADDRESS_ZERO, address_list).call(), listed_only=False)
+        if self.settings.stable_token_addr.lower() not in [t.token_address.lower() for t in tokens]:
+            tokens.append(self.get_token(self.settings.stable_token_addr))
+        prices = self.get_prices(tokens)
+        return self.prepare_pool_epochs(epochs_latest, pools, tokens, prices)
 
 
     @require_context
@@ -728,8 +759,25 @@ class Chain(CommonChain):
 
     @require_context
     @lru_cache(maxsize=None)
-    def get_raw_latest_pool_epochs_page(self, limit, offset):
-        return self.sugar_rewards.functions.epochsLatest(limit, offset).call()
+    def get_latest_pool_epochs_page(self, limit, offset):
+        epochs_latest = self.sugar_rewards.functions.epochsLatest(limit, offset).call()
+        pools = []
+        address_list = []
+        for t in epochs_latest:
+            ts, lp, votes, emissions, incentives, fees = t[0], normalize_address(t[1]), t[2], t[3], t[4], t[5]
+            pools.append(self.get_pool_by_address(lp))
+
+            for i in incentives:
+                address_list.append(i[0])
+
+            for i in fees:
+                address_list.append(i[0])
+
+        tokens = self.prepare_tokens(self.sugar.functions.tokens(len(address_list), 0, ADDRESS_ZERO, address_list).call(), listed_only=False)
+        if self.settings.stable_token_addr.lower() not in [t.token_address.lower() for t in tokens]:
+            tokens.append(self.get_token(self.settings.stable_token_addr))
+        prices = self.get_prices(tokens)
+        return self.prepare_pool_epochs(epochs_latest, pools, tokens, prices)
 
     @require_context
     def _get_quotes_for_paths(self, from_token: Token, to_token: Token, amount_in: int, pools: List[LiquidityPoolForSwap], paths: List[List[Tuple]]) -> List[Optional[Quote]]:
