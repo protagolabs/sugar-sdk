@@ -18,6 +18,7 @@ import networkx as nx
 import math, time, asyncio, decimal, secrets, socket
 from contextlib import contextmanager, asynccontextmanager
 from fastcore.test import test_eq
+import os
 
 # %% ../src/helpers.ipynb 3
 def normalize_address(address: str) -> str: return Web3.to_checksum_address(address.lower())
@@ -127,7 +128,7 @@ def to_bytes32_str(val: str) -> str: return f"0x{to_bytes32(val).hex()}"
 @dataclass
 class Pair: token0: str; token1: str; pool: str
 
-def find_all_paths(pairs: List[Pair], start_token: str, end_token: str, cutoff=3) -> List[List[Tuple]]:
+def find_all_paths(pairs: List[Pair], start_token: str, end_token: str, cutoff=os.getenv("FIND_ALL_PATHS_CUTOFF", 2)) -> List[List[Tuple]]:
     # MultiGraph required to support parallel edges
     # same tokens can be present in different pools, hence parallel edges
     # specific pool identifier is stored inside edge attribute
