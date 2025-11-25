@@ -154,7 +154,7 @@ def make_op_chain_settings(get_env: GetEnv = get_env, **kwargs) -> ChainSettings
 def make_base_chain_settings(get_env: GetEnv = get_env, **kwargs) -> ChainSettings:
     d = {
         "rpc_uri": "https://mainnet.base.org",
-        "pools_count_upper_bound": 9000,
+        "pools_count_upper_bound": 26000,
         "wrapped_native_token_addr": "0x4200000000000000000000000000000000000006",
         "sugar_contract_addr": "0x27fc745390d1f4BaF8D184FBd97748340f786634",
         "sugar_rewards_contract_addr": "0xD4aD2EeeB3314d54212A92f4cBBE684195dEfe3E",
