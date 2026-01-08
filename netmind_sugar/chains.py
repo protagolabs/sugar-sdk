@@ -735,7 +735,9 @@ class Chain(CommonChain):
         address_list = []
         for t in epochs_latest:
             ts, lp, votes, emissions, incentives, fees = t[0], normalize_address(t[1]), t[2], t[3], t[4], t[5]
-            pools.append(self.get_pool_by_address(lp))
+            pool = self.get_pool_by_address(lp)
+            if pool:
+                pools.append(pool)
 
             for i in incentives:
                 address_list.append(i[0])
