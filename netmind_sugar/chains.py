@@ -12,7 +12,7 @@ __all__ = ['original_format_batched_response', 'T', 'safe_format_batched_respons
 # %% ../src/chains.ipynb 3
 import os, asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import wraps, lru_cache
+from functools import wraps
 from async_lru import alru_cache
 from cachetools import cached, TTLCache
 from typing import List, TypeVar, Callable, Optional, Tuple, Dict
@@ -57,6 +57,43 @@ def require_async_context(f: Callable[..., T]) -> Callable[..., T]:
         if not self._in_context: raise RuntimeError("Chain methods can only be accessed within 'async with' block")
         return await f(self, *args, **kwargs)
     return wrapper
+
+# Method-level lru_cache / alru_cache keep a class-wide reference to every `self`
+# they see, so each Chain (with its Web3 provider, HTTP sessions and cached pools)
+# would never be freed. These caches live on the instance instead.
+def _cache_key(f: Callable, args: tuple, kwargs: dict) -> tuple:
+    return (f.__name__, args, frozenset(kwargs.items()))
+
+def instance_cache(f: Callable[..., T]) -> Callable[..., T]:
+    """Memoize a method for the lifetime of its instance without pinning the instance."""
+    @wraps(f)
+    def wrapper(self, *args, **kwargs) -> T:
+        cache, key = self.__dict__.setdefault("_instance_cache", {}), _cache_key(f, args, kwargs)
+        if key not in cache: cache[key] = f(self, *args, **kwargs)
+        return cache[key]
+    return wrapper
+
+def async_instance_cache(f: Callable[..., T]) -> Callable[..., T]:
+    """Async variant of instance_cache; concurrent callers share one in-flight call and failures are not cached."""
+    @wraps(f)
+    async def wrapper(self, *args, **kwargs) -> T:
+        cache, key = self.__dict__.setdefault("_instance_cache", {}), _cache_key(f, args, kwargs)
+        task = cache.get(key)
+        if task is None: task = cache[key] = asyncio.ensure_future(f(self, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except BaseException:
+            if task.done() and cache.get(key) is task and (task.cancelled() or task.exception() is not None):
+                cache.pop(key, None)
+            raise
+    return wrapper
+
+def close_http_sessions(provider: HTTPProvider) -> None:
+    """Close every requests.Session a sync HTTPProvider cached (web3 keeps one per thread and exposes no close API)."""
+    cache = getattr(getattr(provider, "_request_session_manager", None), "session_cache", None)
+    sessions = getattr(cache, "_data", {})
+    for session in list(sessions.values()): session.close()
+    sessions.clear()
 
 
 class CommonChain:
@@ -226,6 +263,7 @@ class AsyncChain(CommonChain):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         self._in_context = False
+        self.__dict__.pop("_instance_cache", None)
         await self.web3.provider.disconnect()
         return None
 
@@ -301,7 +339,7 @@ class AsyncChain(CommonChain):
         return await self.balance_of(token_address=self.settings.bridge_token_addr, owner_address=user_ica)
 
     @require_async_context
-    @alru_cache(maxsize=None)
+    @async_instance_cache
     async def get_all_tokens(self, listed_only: bool = False) -> List[Token]:
         def get_tokens(limit, offset): return self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, [])
         return self.prepare_tokens(await self.apaginate(get_tokens), listed_only)
@@ -332,7 +370,7 @@ class AsyncChain(CommonChain):
         """Get prices for tokens in target stable token"""
         return self.prepare_prices(tokens, await self._get_prices(tuple(tokens)))
 
-    @alru_cache(maxsize=None)
+    @async_instance_cache
     async def get_raw_pools(self, for_swaps: bool):
         return await self.apaginate(self.sugar.functions.forSwaps if for_swaps else self.sugar.functions.all)
     
@@ -345,7 +383,7 @@ class AsyncChain(CommonChain):
         else: return self.prepare_pools_for_swap(pools)
     
     @require_async_context
-    @alru_cache(maxsize=None)
+    @async_instance_cache
     async def get_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
         try:
             p = await self.sugar.functions.byAddress(address).call()
@@ -354,7 +392,7 @@ class AsyncChain(CommonChain):
         return self.prepare_pools([p], tokens, await self.get_prices(tokens))[0]
 
     @require_async_context
-    @alru_cache(maxsize=None)
+    @async_instance_cache
     async def get_pool_epochs(self, lp: str, offset: int = 0, limit: int = 10) -> List[LiquidityPoolEpoch]:
         tokens, pools = await self.get_all_tokens(listed_only=False), await self.get_pools()
         prices = await self.get_prices(tokens)
@@ -362,7 +400,7 @@ class AsyncChain(CommonChain):
         return self.prepare_pool_epochs(r, pools, tokens, prices)
 
     @require_async_context
-    @alru_cache(maxsize=None)
+    @async_instance_cache
     async def get_latest_pool_epochs(self) -> List[LiquidityPoolEpoch]:
         tokens, pools = await self.get_all_tokens(listed_only=False), await self.get_pools()
         prices = await self.get_prices(tokens)
@@ -533,6 +571,8 @@ class Chain(CommonChain):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Sync context manager exit"""
         self._in_context = False
+        self.__dict__.pop("_instance_cache", None)
+        close_http_sessions(self.web3.provider)
         return None
     
     def paginate(self, f: Callable):
@@ -629,13 +669,13 @@ class Chain(CommonChain):
         return self.sign_and_send_tx(token_contract.functions.approve(addr, amount))
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_all_tokens(self, listed_only: bool = False) -> List[Token]:
         def get_tokens(limit, offset): return self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, [])
         return self.prepare_tokens(self.paginate(get_tokens), listed_only)
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_tokens_page(self, limit, offset) -> List[Token]:
         return self.sugar.functions.tokens(limit, offset, ADDRESS_ZERO, []).call()
 
@@ -672,11 +712,11 @@ class Chain(CommonChain):
         """Get prices for tokens in target stable token"""
         return self.prepare_prices(tokens, self._get_prices(tuple(tokens)))
     
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_raw_pools(self, for_swaps: bool):
         return self.paginate(self.sugar.functions.forSwaps if for_swaps else self.sugar.functions.all)
 
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_pools_page(self, limit, offset, for_swaps: bool = False):
         pools = self.sugar.functions.forSwaps(limit, offset).call() if for_swaps else self.sugar.functions.all(limit, offset).call()
         if not for_swaps:
@@ -696,7 +736,7 @@ class Chain(CommonChain):
         else: return self.prepare_pools_for_swap(pools)
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_pool_by_address(self, address: str) -> Optional[LiquidityPool]:
         try:
             pools = self.sugar.functions.byAddress(address).call()
@@ -720,7 +760,7 @@ class Chain(CommonChain):
     def get_pools_for_swaps(self) -> List[LiquidityPoolForSwap]: return self.get_pools(for_swaps=True)
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_pool_epochs(self, lp: str, offset: int = 0, limit: int = 10) -> List[LiquidityPoolEpoch]:
         tokens, pools = self.get_all_tokens(listed_only=False), self.get_pools()
         prices = self.get_prices(tokens)
@@ -728,7 +768,7 @@ class Chain(CommonChain):
         return self.prepare_pool_epochs(r, pools, tokens, prices)
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_pool_epochs_page(self, lp: str, offset: int = 0, limit: int = 10):
         epochs_latest = self.sugar_rewards.functions.epochsByAddress(limit, offset, normalize_address(lp)).call()
         pools = []
@@ -753,14 +793,14 @@ class Chain(CommonChain):
 
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_latest_pool_epochs(self) -> List[LiquidityPoolEpoch]:
         tokens, pools = self.get_all_tokens(listed_only=False), self.get_pools()
         prices = self.get_prices(tokens)
         return self.prepare_pool_epochs(self.paginate(self.sugar_rewards.functions.epochsLatest), pools, tokens, prices)
 
     @require_context
-    @lru_cache(maxsize=None)
+    @instance_cache
     def get_latest_pool_epochs_page(self, limit, offset):
         epochs_latest = self.sugar_rewards.functions.epochsLatest(limit, offset).call()
         pools = []
